@@ -1,91 +1,96 @@
 import fitz  # PyMuPDF
+import math
 
-def are_colors_close(c1, c2, tolerance=0.1):
-    """Sprawdza czy dwa kolory są do siebie podobne (dla formatu RGB 0-1)."""
-    if not c1 or not c2: return False
-    # Jeśli kolor jest zdefiniowany jako float (skala szarości), zamień na krotkę
-    if isinstance(c1, float): c1 = (c1, c1, c1)
-    if isinstance(c2, float): c2 = (c2, c2, c2)
-    
-    # Sprawdź długość (niektóre kolory to CMYK, tutaj upraszczamy do RGB)
-    if len(c1) != 3 or len(c2) != 3: return False
+def color_distance(c1, c2):
+    """Oblicza różnicę między dwoma kolorami (pitagoras w 3D)."""
+    return math.sqrt(sum((a - b) ** 2 for a, b in zip(c1, c2)))
 
-    return all(abs(c1[i] - c2[i]) < tolerance for i in range(3))
-
-def label_waste_schedule(input_pdf, output_pdf):
+def label_waste_schedule_images(input_pdf, output_pdf):
     doc = fitz.open(input_pdf)
-
-    # DEFINICJA KOLORÓW I NAZW (Wartości RGB w skali 0.0 - 1.0)
-    # Kolory pobrane "na oko" z typowych harmonogramów, mogą wymagać drobnej korekty
+    
+    # DEFINICJA KOLORÓW (Wartości RGB 0-255)
+    # Wartości przybliżone na podstawie Twojego zrzutu ekranu
     legend = [
-        {"name": "Papier",    "color": (0.0, 0.45, 0.75)},   # Niebieski
-        {"name": "Metale/Plastik", "color": (1.0, 0.8, 0.0)}, # Żółty/Pomarańczowy
-        {"name": "Szkło",     "color": (0.2, 0.6, 0.2)},     # Zielony (butelka)
-        {"name": "Bio",       "color": (0.6, 0.3, 0.1)},     # Brązowy
-        {"name": "Zmieszane", "color": (0.0, 0.0, 0.0)},     # Czarny
-        {"name": "Zielone",   "color": (0.5, 0.5, 0.5)},     # Szary/Zgniła zieleń (liść)
-        {"name": "Gabaryty",  "color": (0.8, 0.4, 0.1)},     # Rdzawy/Czerwony (meble)
+        {"name": "Papier",           "color": (0, 95, 170)},    # Niebieski
+        {"name": "Metale/Plastik",   "color": (245, 170, 0)},   # Żółty
+        {"name": "Szkło",            "color": (45, 160, 45)},   # Zielony
+        {"name": "Bio",              "color": (140, 90, 60)},   # Brązowy (jasny)
+        {"name": "Zmieszane",        "color": (40, 40, 40)},    # Czarny/Ciemnoszary
+        {"name": "Zielone",          "color": (85, 90, 95)},    # Szary (liść)
+        {"name": "Gabaryty",         "color": (230, 90, 20)},   # Pomarańczowy/Rudy
+        {"name": "Bio Gastronomia",  "color": (110, 70, 40)},   # Ciemny brąz
     ]
 
     print(f"Przetwarzanie pliku: {input_pdf}...")
+    
+    labeled_count = 0
 
     for page in doc:
-        # Pobierz wszystkie rysunki wektorowe (ikonki są zazwyczaj wektorami)
-        drawings = page.get_drawings()
+        # Krok 1: Renderujemy stronę do pamięci jako obrazek, żeby móc sprawdzić kolory pikseli
+        pix = page.get_pixmap()
         
-        # Lista miejsc, gdzie już wpisaliśmy tekst (żeby nie dublować dla skomplikowanych ikon)
-        labeled_locations = []
+        # Krok 2: Pobieramy informacje o wszystkich obrazkach wklejonych w PDF
+        images_info = page.get_image_info(xrefs=True)
 
-        for path in drawings:
-            fill_color = path.get("fill") # Pobierz kolor wypełnienia kształtu
-            rect = path["rect"]           # Pobierz współrzędne (x, y, szer, wys)
+        for img in images_info:
+            bbox = fitz.Rect(img['bbox'])
+            
+            # Filtrowanie: Ignorujemy tła i bardzo małe elementy
+            # Zakładamy, że ikonka ma szerokość między 10 a 60 punktów
+            if bbox.width < 10 or bbox.width > 60:
+                continue
+            
+            # Pobieramy kolor ze środka obrazka
+            mid_x = int(bbox.x0 + bbox.width / 2)
+            mid_y = int(bbox.y0 + bbox.height / 2)
 
-            # Filtrowanie: Pomiń bardzo małe kropki lub wielkie tła oraz linie tabeli
-            if rect.width > 50 or rect.width < 5 or rect.height < 5:
+            # Sprawdzamy czy punkt mieści się w granicach strony
+            if mid_x >= pix.width or mid_y >= pix.height:
                 continue
 
+            # Pobieramy kolor piksela (r, g, b)
+            pixel_color = pix.pixel(mid_x, mid_y)
+            
+            # Szukamy pasującego koloru w legendzie
             found_label = None
+            best_dist = 1000
             
-            # Sprawdź czy kolor pasuje do naszej legendy
             for item in legend:
-                if are_colors_close(fill_color, item["color"]):
-                    found_label = item["name"]
-                    break
-            
-            if found_label:
-                # Sprawdź czy nie opisaliśmy już tej ikonki (ikonka może składać się z wielu kształtów)
-                # Sprawdzamy czy w promieniu 10 punktów już czegoś nie wstawiliśmy
-                already_labeled = False
-                for loc in labeled_locations:
-                    if abs(loc.x - rect.x) < 15 and abs(loc.y - rect.y) < 15:
-                        already_labeled = True
-                        break
-                
-                if not already_labeled:
-                    # Wstaw tekst
-                    # x + width + 2 = wstawiamy zaraz za ikonką
-                    # y + height - 2 = wyrównanie do dołu ikonki
-                    text_point = fitz.Point(rect.x + rect.width + 2, rect.y + rect.height/1.2)
-                    
-                    page.insert_text(
-                        text_point, 
-                        found_label, 
-                        fontsize=6,           # Mała czcionka, żeby się zmieściło
-                        color=(0.2, 0.2, 0.2) # Ciemnoszary kolor tekstu
-                    )
-                    
-                    labeled_locations.append(rect)
+                dist = color_distance(pixel_color, item["color"])
+                # Jeśli kolor jest wystarczająco blisko (tolerancja 60)
+                if dist < 60: 
+                    if dist < best_dist:
+                        best_dist = dist
+                        found_label = item["name"]
 
-    doc.save(output_pdf)
-    print(f"Gotowe! Zapisano jako: {output_pdf}")
+            if found_label:
+                # Wstaw tekst obok ikonki
+                text_point = fitz.Point(bbox.x1 + 2, bbox.y1 - 4) # x1 to prawa krawędź
+                
+                page.insert_text(
+                    text_point, 
+                    found_label, 
+                    fontsize=6, 
+                    color=(0.2, 0.2, 0.2)
+                )
+                labeled_count += 1
+                # Debug: odkomentuj linię poniżej, jeśli chcesz widzieć co wykryto
+                # print(f"Wykryto {found_label} w kolorze {pixel_color}")
+
+    if labeled_count == 0:
+        print("UWAGA: Nie oznaczono żadnej ikonki.")
+        print("Możliwe przyczyny:")
+        print("1. Ikonki nie są obrazkami (metoda get_image_info zawiodła).")
+        print("2. Kolory w legendzie różnią się zbyt mocno od tych w pliku.")
+    else:
+        doc.save(output_pdf)
+        print(f"Sukces! Oznaczono {labeled_count} ikon. Zapisano: {output_pdf}")
 
 # --- KONFIGURACJA ---
-# Podaj tutaj nazwę swojego pliku PDF
-plik_wejsciowy = "harmonogram.pdf" 
+plik_wejsciowy = "harmonogram.pdf"
 plik_wyjsciowy = "harmonogram_opisany.pdf"
 
 try:
-    label_waste_schedule(plik_wejsciowy, plik_wyjsciowy)
+    label_waste_schedule_images(plik_wejsciowy, plik_wyjsciowy)
 except Exception as e:
     print(f"Wystąpił błąd: {e}")
-    print("Upewnij się, że nazwa pliku jest poprawna i plik nie jest otwarty w innym programie.")
