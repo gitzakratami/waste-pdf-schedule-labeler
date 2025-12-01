@@ -8,22 +8,33 @@ def color_distance(c1, c2):
 def label_waste_schedule_final(input_pdf, output_pdf):
     doc = fitz.open(input_pdf)
     
-    # Rozmiar czcionki
-    FONT_SIZE = 9
+    # Ustawienia tekstu
+    FONT_SIZE = 10         
+    FONT_NAME = "Helvetica-Bold" 
     
-    # DEFINICJA KOLORÓW I NAZW (WIELKIMI LITERAMI)
+    # DEFINICJA KOLORÓW
     legend = [
         {"name": "PAPIER",          "color": (0, 95, 170)},    # Niebieski
-        {"name": "PLASTIK",         "color": (245, 170, 0)},   # Żółty/Pomarańczowy (dawniej Metale...)
-        {"name": "SZKŁO",           "color": (45, 160, 45)},   # Zielony
-        {"name": "BIO",             "color": (140, 90, 60)},   # Brązowy
-        {"name": "ZMIESZANE",       "color": (40, 40, 40)},    # Ciemny
-        {"name": "ZIELONE",         "color": (85, 90, 95)},    # Szary
-        {"name": "BIO GASTRO",      "color": (110, 70, 40)},   # Ciemny brąz
         
-        # Definiujemy gabaryty, żeby program wiedział co to jest, 
-        # ale nazwiemy je "SKIP", żeby ich nie pisał.
-        {"name": "SKIP",            "color": (230, 90, 20)},   # Rudy (Gabaryty)
+        # --- PLASTIK (Różne odcienie żółtego/pomarańczowego) ---
+        {"name": "PLASTIK",         "color": (255, 205, 0)},   
+        {"name": "PLASTIK",         "color": (245, 170, 0)},   
+        {"name": "PLASTIK",         "color": (230, 150, 0)},   
+        
+        {"name": "SZKŁO",           "color": (45, 160, 45)},   # Zielony
+        {"name": "ZMIESZANE",       "color": (40, 40, 40)},    # Bardzo ciemny/Czarny
+        
+        # --- ZIELONE (Różne odcienie szarości) ---
+        # Dodajemy kilka wariantów, żeby trafić w ten konkretny ze zrzutu ekranu
+        {"name": "ZIELONE",         "color": (85, 90, 95)},    # Szary (standardowy)
+        {"name": "ZIELONE",         "color": (105, 105, 105)}, # Jaśniejszy szary (DimGray)
+        {"name": "ZIELONE",         "color": (80, 80, 80)},    # Ciemny szary (ale nie czarny)
+        {"name": "ZIELONE",         "color": (96, 106, 116)},  # Szaro-niebieskawy (częsty w druku)
+        
+        # --- FRAKCJE IGNOROWANE (SKIP) ---
+        {"name": "SKIP",            "color": (140, 90, 60)},   # BIO
+        {"name": "SKIP",            "color": (110, 70, 40)},   # BIO GASTRO
+        {"name": "SKIP",            "color": (230, 90, 20)},   # GABARYTY
     ]
 
     print(f"Przetwarzanie pliku: {input_pdf}...")
@@ -36,40 +47,42 @@ def label_waste_schedule_final(input_pdf, output_pdf):
         for img in images_info:
             bbox = fitz.Rect(img['bbox'])
             
-            # Filtrowanie wielkości ikonki
-            if bbox.width < 10 or bbox.width > 60:
+            # Filtrowanie po rozmiarze
+            if bbox.width < 10 or bbox.width > 70:
                 continue
             
-            # Pobieranie koloru środka
-            mid_x = int(bbox.x0 + bbox.width / 2)
-            mid_y = int(bbox.y0 + bbox.height / 2)
+            # Próbkowanie koloru ze środka
+            mid_x = int(bbox.x0 + bbox.width / 2) + 2
+            mid_y = int(bbox.y0 + bbox.height / 2) + 2
 
             if mid_x >= pix.width or mid_y >= pix.height:
                 continue
 
             pixel_color = pix.pixel(mid_x, mid_y)
             
+            # Jeśli trafiliśmy w biały (liść w środku), bierzemy kolor z lewego górnego rogu tła
+            if sum(pixel_color) > 700: 
+                 pixel_color = pix.pixel(int(bbox.x0 + 2), int(bbox.y0 + 2))
+
             found_label = None
             best_dist = 1000
             
-            # Szukanie najlepszego koloru
+            # Szukanie pasującego koloru
             for item in legend:
                 dist = color_distance(pixel_color, item["color"])
-                if dist < 60: 
+                
+                # Tolerancja 65 jest bezpieczna, żeby nie pomylić ZIELONE (szary) ze ZMIESZANE (czarny)
+                if dist < 65: 
                     if dist < best_dist:
                         best_dist = dist
                         found_label = item["name"]
 
-            # Logika wpisywania tekstu
+            # Wpisanie tekstu
             if found_label and found_label != "SKIP":
-                # Obliczamy szerokość tekstu, żeby wyrównać go do lewej
-                text_len = fitz.get_text_length(found_label, fontsize=FONT_SIZE)
+                text_len = fitz.get_text_length(found_label, fontsize=FONT_SIZE, fontname=FONT_NAME)
                 
-                # Ustawiamy punkt wstawienia po lewej stronie ikonki (bbox.x0)
-                # Odejmujemy szerokość tekstu i mały margines (4 punkty)
-                x_pos = bbox.x0 - text_len - 4
-                
-                # Ustawiamy wysokość (lekka korekta w dół, żeby było równo z ikonką)
+                # Pozycjonowanie po lewej stronie
+                x_pos = bbox.x0 - text_len - 5
                 y_pos = bbox.y1 - 4
                 
                 text_point = fitz.Point(x_pos, y_pos)
@@ -78,12 +91,13 @@ def label_waste_schedule_final(input_pdf, output_pdf):
                     text_point, 
                     found_label, 
                     fontsize=FONT_SIZE, 
-                    color=(0, 0, 0) # Czarny tekst dla lepszego kontrastu
+                    fontname=FONT_NAME,
+                    color=(0, 0, 0) 
                 )
                 labeled_count += 1
 
     doc.save(output_pdf)
-    print(f"Gotowe! Oznaczono {labeled_count} frakcji (pominięto gabaryty).")
+    print(f"Gotowe! Oznaczono {labeled_count} frakcji.")
     print(f"Plik zapisany jako: {output_pdf}")
 
 # --- KONFIGURACJA ---
